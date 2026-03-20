@@ -1,0 +1,70 @@
+{
+  "name": "@digitalforgestudios/minerva-sdk",
+  "version": "0.2.1",
+  "description": "TypeScript/JavaScript SDK for the Minerva ZK-STARK proof platform. Circuit templates, proof verification, and Juno AI integration.",
+  "main": "dist/index.js",
+  "module": "dist/index.mjs",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    },
+    "./circuits": {
+      "import": "./dist/circuits/index.mjs",
+      "require": "./dist/circuits/index.js",
+      "types": "./dist/circuits/index.d.ts"
+    },
+    "./verifier": {
+      "import": "./dist/verifier.mjs",
+      "require": "./dist/verifier.js",
+      "types": "./dist/verifier.d.ts"
+    }
+  },
+  "files": [
+    "dist",
+    "wasm",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsup src/index.ts --format cjs,esm --dts --clean",
+    "dev": "tsup src/index.ts --format cjs,esm --dts --watch",
+    "test": "vitest",
+    "lint": "eslint src/",
+    "typecheck": "tsc --noEmit"
+  },
+  "keywords": [
+    "zero-knowledge",
+    "zk-stark",
+    "zkp",
+    "proof",
+    "privacy",
+    "cryptography",
+    "wasm",
+    "minerva",
+    "esg",
+    "compliance",
+    "verification"
+  ],
+  "author": "Digital Forge Studios <hello@dforge.ca>",
+  "license": "SEE LICENSE IN LICENSE",
+  "homepage": "https://zkesg.com/developers",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/digitalforgeca/minerva-sdk.git"
+  },
+  "bugs": {
+    "url": "https://github.com/digitalforgeca/minerva-sdk/issues"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "devDependencies": {
+    "tsup": "^8.0.0",
+    "typescript": "^5.4.0",
+    "vitest": "^2.0.0",
+    "eslint": "^9.0.0"
+  }
+}
