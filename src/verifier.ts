@@ -66,7 +66,8 @@ export class Verifier {
   static async init(options?: VerifierOptions): Promise<Verifier> {
     const wasmUrl = options?.wasmUrl ?? 'https://cdn.zkesg.com/wasm/minerva-verifier.wasm';
 
-    // TODO: Load verifier WASM binary
+    // TODO: WASM verifier binary not yet published to CDN.
+    // When available, load it here:
     // const wasmBytes = await fetch(wasmUrl).then(r => r.arrayBuffer());
     // const wasmModule = await WebAssembly.instantiate(wasmBytes, imports);
     const wasmInstance = null;
@@ -120,9 +121,31 @@ export class Verifier {
       };
     }
 
-    // TODO: Delegate to WASM verifier
+    // WASM verifier not yet available — perform structural validation only.
+    // For real cryptographic verification, use the Rust SDK or CLI verifier.
+    if (!this.wasmInstance) {
+      const isStructurallyValid = 
+        typeof parsed.proof === 'string' &&
+        parsed.proof.startsWith('WINTERFELL_PROOF_') &&
+        parsed.proof.length > 100 &&
+        parsed.publicOnly != null &&
+        Object.keys(parsed.publicOnly).length > 0;
+
+      return {
+        valid: false,
+        status: isStructurallyValid ? 'invalid' : 'malformed',
+        circuit: parsed.meta?.circuit ?? '',
+        publicInputs: parsed.publicOnly ?? {},
+        security: 0,
+        engine: parsed.meta?.engine ?? 'unknown',
+        generatedAt: parsed.meta?.generatedAt ?? '',
+        verifiedInMs: performance.now() - start,
+      };
+    }
+
+    // When WASM is loaded, delegate to it
     // const isValid = this.wasmInstance.verify(parsed.proof, parsed.publicOnly);
-    const isValid = parsed.valid; // Placeholder until WASM is wired
+    const isValid = false; // Unreachable when wasmInstance is null
 
     return {
       valid: isValid,
