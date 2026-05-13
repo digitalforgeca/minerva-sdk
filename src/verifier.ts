@@ -1,14 +1,20 @@
 import type { Proof } from './types';
 
 /**
+ * Shape of the WASM module loaded from zkesg.com.
+ * Must match the #[wasm_bindgen] exports in mwa/src/lib.rs.
+ */
+interface WasmModule {
+  default: (input?: string | URL | RequestInfo) => Promise<unknown>;
+  verify_proof: (json: string) => boolean;
+  get_system_info?: () => string;
+}
+
+/**
  * Standalone proof verifier — works without the full Minerva engine.
  *
- * This is the public-facing verification path. Anyone with a proof
- * can verify it without authentication, without the prover WASM,
- * and without access to private inputs.
- *
- * The verifier WASM binary is ~45KB (vs ~280KB for the full prover)
- * and performs only the FRI verification step.
+ * Downloads the same WASM binary as the Minerva engine but only uses
+ * the verification path. Performs real Winterfell STARK verification.
  *
  * @example
  * ```typescript
@@ -17,10 +23,8 @@ import type { Proof } from './types';
  * const verifier = await Verifier.init();
  * const result = await verifier.check(proofJson);
  *
- * console.log(result.valid);      // true
- * console.log(result.circuit);    // "Carbon Compliance"
+ * console.log(result.valid);        // true
  * console.log(result.publicInputs); // { threshold: 10000 }
- * console.log(result.security);   // 128
  * ```
  */
 
@@ -29,134 +33,139 @@ export interface VerificationResult {
   /** Whether the proof is cryptographically valid */
   valid: boolean;
   /** Human-readable status message */
-  status: 'verified' | 'invalid' | 'malformed' | 'unsupported_version';
-  /** Circuit name from proof metadata */
-  circuit: string;
+  status: 'verified' | 'invalid' | 'malformed' | 'error';
   /** Public inputs (safe to display) */
   publicInputs: Record<string, unknown>;
-  /** Security level in bits */
-  security: number;
-  /** Engine version that generated the proof */
-  engine: string;
+  /** Circuit hash from proof metadata */
+  circuitHash: string;
   /** When the proof was generated (ISO-8601) */
   generatedAt: string;
   /** Verification duration in milliseconds */
   verifiedInMs: number;
+  /** Error message (only when status is 'malformed' or 'error') */
+  error?: string;
 }
 
 /** Options for initializing the standalone verifier */
 export interface VerifierOptions {
-  /** Custom URL for the verifier WASM binary */
+  /** Custom URL for the WASM binary (default: https://zkesg.com/wasm/minerva_wasm_bg.wasm) */
   wasmUrl?: string;
 }
 
 export class Verifier {
-  private wasmInstance: unknown;
+  private wasm: WasmModule;
 
-  private constructor(wasmInstance: unknown) {
-    this.wasmInstance = wasmInstance;
+  private constructor(wasm: WasmModule) {
+    this.wasm = wasm;
   }
 
   /**
    * Initialize the standalone verifier.
    *
-   * Downloads the lightweight verification-only WASM binary (~45KB).
-   * This does NOT include the prover — only the FRI verification logic.
+   * Downloads the Minerva WASM binary from zkesg.com.
    */
   static async init(options?: VerifierOptions): Promise<Verifier> {
-    const wasmUrl = options?.wasmUrl ?? 'https://cdn.zkesg.com/wasm/minerva-verifier.wasm';
+    const wasmUrl = options?.wasmUrl ?? 'https://zkesg.com/wasm/minerva_wasm_bg.wasm';
+    const jsGlueUrl = wasmUrl.replace(/_bg\.wasm$/, '.js');
 
-    // TODO: WASM verifier binary not yet published to CDN.
-    // When available, load it here:
-    // const wasmBytes = await fetch(wasmUrl).then(r => r.arrayBuffer());
-    // const wasmModule = await WebAssembly.instantiate(wasmBytes, imports);
-    const wasmInstance = null;
+    const script = await fetch(jsGlueUrl).then((r) => {
+      if (!r.ok) throw new Error(`Failed to fetch Minerva WASM glue: ${r.status} ${r.statusText}`);
+      return r.text();
+    });
 
-    return new Verifier(wasmInstance);
+    const blob = new Blob([script], { type: 'application/javascript' });
+    const blobUrl = URL.createObjectURL(blob);
+
+    let mod: WasmModule;
+    try {
+      mod = await import(/* webpackIgnore: true */ blobUrl) as WasmModule;
+      await mod.default(wasmUrl);
+    } finally {
+      URL.revokeObjectURL(blobUrl);
+    }
+
+    return new Verifier(mod);
   }
 
   /**
-   * Verify a Minerva proof.
+   * Verify a Minerva proof with full cryptographic verification.
    *
-   * Accepts either a Proof object or a raw JSON string.
-   * Only the proof blob and public inputs are used — no private data needed.
+   * Accepts either a Proof object, a raw ProofOutput JSON string,
+   * or a parsed ProofOutput object.
    *
-   * @param proof - Proof object or JSON string
+   * @param proof - Proof object, ProofOutput JSON string, or ProofOutput object
    * @returns Detailed verification result
    */
-  async check(proof: Proof | string): Promise<VerificationResult> {
+  async check(proof: Proof | string | Record<string, unknown>): Promise<VerificationResult> {
     const start = performance.now();
 
-    let parsed: Proof;
+    let proofJson: string;
+
     if (typeof proof === 'string') {
-      try {
-        parsed = JSON.parse(proof) as Proof;
-      } catch {
-        return {
-          valid: false,
-          status: 'malformed',
-          circuit: '',
-          publicInputs: {},
-          security: 0,
-          engine: '',
-          generatedAt: '',
-          verifiedInMs: performance.now() - start,
-        };
-      }
+      proofJson = proof;
+    } else if ('toJSON' in proof && typeof (proof as Proof).toJSON === 'function') {
+      proofJson = (proof as Proof).toJSON();
     } else {
-      parsed = proof;
+      proofJson = JSON.stringify(proof);
     }
 
-    // Version check
-    if (!parsed.meta?.engine?.startsWith('minerva-wasm-')) {
+    // Validate it parses at all
+    let parsed: Record<string, unknown>;
+    try {
+      parsed = JSON.parse(proofJson);
+    } catch {
       return {
         valid: false,
-        status: 'unsupported_version',
-        circuit: parsed.meta?.circuit ?? '',
-        publicInputs: parsed.publicOnly ?? {},
-        security: 0,
-        engine: parsed.meta?.engine ?? 'unknown',
-        generatedAt: parsed.meta?.generatedAt ?? '',
+        status: 'malformed',
+        publicInputs: {},
+        circuitHash: '',
+        generatedAt: '',
         verifiedInMs: performance.now() - start,
+        error: 'Invalid JSON',
       };
     }
 
-    // WASM verifier not yet available — perform structural validation only.
-    // For real cryptographic verification, use the Rust SDK or CLI verifier.
-    if (!this.wasmInstance) {
-      const isStructurallyValid = 
-        typeof parsed.proof === 'string' &&
-        parsed.proof.startsWith('WINTERFELL_PROOF_') &&
-        parsed.proof.length > 100 &&
-        parsed.publicOnly != null &&
-        Object.keys(parsed.publicOnly).length > 0;
-
+    // Check required fields
+    const proofBlob = parsed.proof as string | undefined;
+    if (!proofBlob || typeof proofBlob !== 'string' || !proofBlob.startsWith('WINTERFELL_PROOF_')) {
       return {
         valid: false,
-        status: isStructurallyValid ? 'invalid' : 'malformed',
-        circuit: parsed.meta?.circuit ?? '',
-        publicInputs: parsed.publicOnly ?? {},
-        security: 0,
-        engine: parsed.meta?.engine ?? 'unknown',
-        generatedAt: parsed.meta?.generatedAt ?? '',
+        status: 'malformed',
+        publicInputs: {},
+        circuitHash: '',
+        generatedAt: '',
         verifiedInMs: performance.now() - start,
+        error: 'Missing or invalid proof blob (expected WINTERFELL_PROOF_ prefix)',
       };
     }
 
-    // When WASM is loaded, delegate to it
-    // const isValid = this.wasmInstance.verify(parsed.proof, parsed.publicOnly);
-    const isValid = false; // Unreachable when wasmInstance is null
+    // Run real WASM verification
+    try {
+      const isValid = this.wasm.verify_proof(proofJson);
+      const elapsed = performance.now() - start;
 
-    return {
-      valid: isValid,
-      status: isValid ? 'verified' : 'invalid',
-      circuit: parsed.meta.circuit,
-      publicInputs: parsed.publicOnly,
-      security: parsed.meta.security,
-      engine: parsed.meta.engine,
-      generatedAt: parsed.meta.generatedAt,
-      verifiedInMs: performance.now() - start,
-    };
+      const rawInputs = parsed.public_inputs as Record<string, unknown> | undefined;
+      const publicInputs: Record<string, unknown> = (rawInputs?.data as Record<string, unknown>) ?? rawInputs ?? {};
+
+      return {
+        valid: isValid,
+        status: isValid ? 'verified' : 'invalid',
+        publicInputs,
+        circuitHash: (parsed.circuit_hash as string) ?? '',
+        generatedAt: (parsed.generated_at as string) ?? '',
+        verifiedInMs: elapsed,
+      };
+    } catch (e) {
+      return {
+        valid: false,
+        status: 'error',
+        publicInputs: {},
+        circuitHash: '',
+        generatedAt: '',
+        verifiedInMs: performance.now() - start,
+        error: `Verification error: ${e}`,
+      };
+    }
   }
 
   /**
@@ -164,7 +173,7 @@ export class Verifier {
    *
    * Convenience method for CI/CD pipelines and simple checks.
    */
-  async isValid(proof: Proof | string): Promise<boolean> {
+  async isValid(proof: Proof | string | Record<string, unknown>): Promise<boolean> {
     const result = await this.check(proof);
     return result.valid;
   }
@@ -175,7 +184,7 @@ export class Verifier {
    * @param proofs - Array of Proof objects or JSON strings
    * @returns Array of verification results (same order as input)
    */
-  async checkBatch(proofs: (Proof | string)[]): Promise<VerificationResult[]> {
+  async checkBatch(proofs: (Proof | string | Record<string, unknown>)[]): Promise<VerificationResult[]> {
     return Promise.all(proofs.map((p) => this.check(p)));
   }
 }

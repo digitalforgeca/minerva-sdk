@@ -18,7 +18,7 @@ export class Juno {
 
   constructor(options: JunoOptions) {
     this.apiKey = options.apiKey;
-    this.baseUrl = options.baseUrl ?? 'https://zkesg.com/api';
+    this.baseUrl = options.baseUrl ?? 'https://zkesg.com/api/v1';
   }
 
   /**
@@ -35,13 +35,13 @@ export class Juno {
    * ```
    */
   async design(prompt: string): Promise<Circuit> {
-    const response = await fetch(`${this.baseUrl}/juno/design`, {
+    const response = await fetch(`${this.baseUrl}/juno/generate-circuit`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${this.apiKey}`,
       },
-      body: JSON.stringify({ prompt }),
+      body: JSON.stringify({ description: prompt }),
     });
 
     if (!response.ok) {
@@ -50,18 +50,53 @@ export class Juno {
     }
 
     const data = await response.json();
-    return data.circuit as Circuit;
+    return data.data?.circuit ?? data.circuit as Circuit;
   }
 
   /**
-   * Modify an existing circuit based on natural language instructions.
+   * Chat with Juno for interactive circuit design.
    *
-   * @param circuit - The existing circuit to modify
-   * @param instruction - What to change
-   * @returns A modified MinervaFormat Circuit
+   * @param message - Your message to Juno
+   * @param history - Previous messages in the conversation
+   * @returns Juno's response (may include a circuit)
    */
-  async modify(circuit: Circuit, instruction: string): Promise<Circuit> {
-    const response = await fetch(`${this.baseUrl}/juno/modify`, {
+  async chat(message: string, history?: { role: string; content: string }[]): Promise<{
+    message: string;
+    circuit?: Circuit;
+  }> {
+    const response = await fetch(`${this.baseUrl}/juno/chat`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${this.apiKey}`,
+      },
+      body: JSON.stringify({ message, history: history ?? [] }),
+    });
+
+    if (!response.ok) {
+      const error = await response.text().catch(() => 'Unknown error');
+      throw new Error(`Juno API error (${response.status}): ${error}`);
+    }
+
+    const data = await response.json();
+    return {
+      message: data.data?.message ?? data.message,
+      circuit: data.data?.circuit ?? data.circuit,
+    };
+  }
+
+  /**
+   * Review and improve an existing circuit.
+   *
+   * @param circuit - The existing circuit to review
+   * @param instruction - What to change or improve
+   * @returns Juno's review with an improved circuit
+   */
+  async review(circuit: Circuit, instruction?: string): Promise<{
+    feedback: string;
+    circuit: Circuit;
+  }> {
+    const response = await fetch(`${this.baseUrl}/juno/review-circuit`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -76,6 +111,9 @@ export class Juno {
     }
 
     const data = await response.json();
-    return data.circuit as Circuit;
+    return {
+      feedback: data.data?.feedback ?? data.feedback ?? '',
+      circuit: data.data?.circuit ?? data.circuit,
+    };
   }
 }
